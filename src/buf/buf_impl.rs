@@ -802,10 +802,11 @@ pub trait Buf {
     /// assert_eq!(&bytes[..], &b"hello world"[..]);
     /// ```
     fn to_bytes(&mut self) -> crate::Bytes {
-        use super::BufMut;
-        let mut ret = crate::BytesMut::with_capacity(self.remaining());
-        ret.put(self);
-        ret.freeze()
+        // use super::BufMut;
+        // let mut ret = crate::BytesMut::with_capacity(self.remaining());
+        // ret.put(self);
+        // ret.freeze()
+        unimplemented!()
     }
 }
 

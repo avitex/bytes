@@ -1,14 +1,15 @@
 use core::ptr::NonNull;
-use core::{mem, ptr, slice};
+use core::{fmt, mem, ptr, slice, usize};
 
-use alloc::vec::{Box, Vec};
+use alloc::{boxed::Box, vec::Vec};
 
-use crate::loom::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use crate::loom::sync::atomic::{self, AtomicPtr, AtomicUsize, Ordering};
 
 const KIND_ARC: usize = 0b0;
 const KIND_VEC: usize = 0b1;
 const KIND_MASK: usize = 0b1;
 
+#[derive(Debug)]
 pub(crate) struct Handle {
     /// The length of the window into the backing data.
     len: usize,
@@ -21,20 +22,25 @@ pub(crate) struct Handle {
 }
 
 impl Handle {
-    pub fn empty() -> Self {
+    #[inline]
+    pub const fn empty() -> Self {
         const EMPTY: &[u8] = &[];
         Self::from_static(EMPTY)
     }
 
-    pub fn from_static(data: &'static [u8]) -> Self {
+    #[inline]
+    pub const fn from_static(data: &'static [u8]) -> Self {
+        let ptr = data.as_ptr() as *mut u8;
+        let ptr = unsafe { NonNull::new_unchecked(ptr) };
         Self {
+            ptr,
             len: 0,
-            ptr: NonNull::dangling(),
             data: AtomicPtr::new(ptr::null_mut()),
             vtable: &STATIC_VTABLE,
         }
     }
 
+    #[inline]
     pub fn from_vec(vec: Vec<u8>) -> (Handle, usize) {
         // `Vec::into_boxed_slice` doesn't return a heap allocation
         // for empty vectors, so the pointer isn't aligned enough for
@@ -50,10 +56,10 @@ impl Handle {
         let len = slice.len();
         // We have check the vec to make sure it is not empty.
         let ptr = unsafe { NonNull::new_unchecked(slice.as_ptr() as *mut u8) };
-        let ptr_val = ptr.as_ptr() as usize;
+        let data = ptr.as_ptr() as usize;
 
-        let handle = if ptr_val & 0b1 == 0 {
-            let data = ptr_val | KIND_VEC;
+        let handle = if data & 0b1 == 0 {
+            let data = data | KIND_VEC;
             Self {
                 ptr,
                 len,
@@ -64,12 +70,17 @@ impl Handle {
             Self {
                 ptr,
                 len,
-                data: AtomicPtr::new(ptr_val as *mut _),
+                data: AtomicPtr::new(data as *mut _),
                 vtable: &PROMOTABLE_ODD_VTABLE,
             }
         };
 
         (handle, cap)
+    }
+
+    #[inline]
+    pub fn is_window_empty(&self) -> bool {
+        self.len == 0
     }
 
     #[inline]
@@ -105,7 +116,7 @@ impl Handle {
     #[inline]
     pub unsafe fn into_vec(mut self) -> Vec<u8> {
         // We uniquely own the buffer, so it's ok to call `into_vec`
-        let vec = (self.vtable.into_vec)(&mut self.data, self.ptr.as_ptr(), self.len);
+        let vec = (self.vtable.into_vec)(&mut self.data, self.ptr, self.len);
         // We take ownership of the data ptr, so no further deconstruction is needed.
         mem::forget(self);
         // Return the vec
@@ -116,24 +127,34 @@ impl Handle {
 impl Clone for Handle {
     #[inline]
     fn clone(&self) -> Self {
-        unsafe { (self.vtable.clone)(&self.data, self.ptr.as_ptr(), self.len) }
+        unsafe { (self.vtable.clone)(&self.data, self.ptr, self.len) }
     }
 }
 
 impl Drop for Handle {
     #[inline]
     fn drop(&mut self) {
-        unsafe { (self.vtable.drop)(&mut self.data, self.ptr.as_ptr(), self.len) }
+        unsafe { (self.vtable.drop)(&mut self.data, self.ptr, self.len) }
     }
 }
 
 pub(crate) struct Vtable {
     /// fn(data, ptr, len)
-    pub clone: unsafe fn(&AtomicPtr<()>, *const u8, usize) -> Handle,
+    pub clone: unsafe fn(&AtomicPtr<()>, NonNull<u8>, usize) -> Handle,
     /// fn(data, ptr, len)
-    pub drop: unsafe fn(&mut AtomicPtr<()>, *const u8, usize),
+    pub drop: unsafe fn(&mut AtomicPtr<()>, NonNull<u8>, usize),
     /// fn(data, ptr, len)
-    pub into_vec: unsafe fn(&mut AtomicPtr<()>, *const u8, usize) -> Vec<u8>,
+    pub into_vec: unsafe fn(&mut AtomicPtr<()>, NonNull<u8>, usize) -> Vec<u8>,
+}
+
+impl fmt::Debug for Vtable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Vtable")
+            .field("clone", &(self.clone as *const ()))
+            .field("drop", &(self.drop as *const ()))
+            .field("into_vec", &(self.into_vec as *const ()))
+            .finish()
+    }
 }
 
 // ===== impl StaticVtable =====
@@ -144,16 +165,16 @@ const STATIC_VTABLE: Vtable = Vtable {
     into_vec: static_into_vec,
 };
 
-unsafe fn static_clone(_: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Handle {
-    Handle::from_static(slice::from_raw_parts(ptr, len))
+unsafe fn static_clone(_: &AtomicPtr<()>, ptr: NonNull<u8>, len: usize) -> Handle {
+    Handle::from_static(slice::from_raw_parts(ptr.as_ptr(), len))
 }
 
-unsafe fn static_drop(_: &mut AtomicPtr<()>, _: *const u8, _: usize) {
+unsafe fn static_drop(_: &mut AtomicPtr<()>, _: NonNull<u8>, _: usize) {
     // nothing to drop for &'static [u8]
 }
 
-unsafe fn static_into_vec(_: &mut AtomicPtr<()>, ptr: *const u8, len: usize) -> Vec<u8> {
-    let slice = slice::from_raw_parts(ptr, len);
+unsafe fn static_into_vec(_: &mut AtomicPtr<()>, ptr: NonNull<u8>, len: usize) -> Vec<u8> {
+    let slice = slice::from_raw_parts(ptr.as_ptr(), len);
     let mut buf = Vec::with_capacity(len);
     buf.extend_from_slice(slice);
     buf
@@ -173,7 +194,7 @@ static PROMOTABLE_ODD_VTABLE: Vtable = Vtable {
     into_vec: promotable_odd_into_vec,
 };
 
-unsafe fn promotable_even_clone(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Handle {
+unsafe fn promotable_even_clone(data: &AtomicPtr<()>, ptr: NonNull<u8>, len: usize) -> Handle {
     let shared = data.load(Ordering::Acquire);
     let kind = shared as usize & KIND_MASK;
 
@@ -186,7 +207,7 @@ unsafe fn promotable_even_clone(data: &AtomicPtr<()>, ptr: *const u8, len: usize
     }
 }
 
-unsafe fn promotable_even_drop(data: &mut AtomicPtr<()>, ptr: *const u8, len: usize) {
+unsafe fn promotable_even_drop(data: &mut AtomicPtr<()>, ptr: NonNull<u8>, len: usize) {
     let shared = *data.get_mut();
     let kind = shared as usize & KIND_MASK;
 
@@ -201,7 +222,7 @@ unsafe fn promotable_even_drop(data: &mut AtomicPtr<()>, ptr: *const u8, len: us
 
 unsafe fn promotable_even_into_vec(
     data: &mut AtomicPtr<()>,
-    ptr: *const u8,
+    ptr: NonNull<u8>,
     len: usize,
 ) -> Vec<u8> {
     let shared = *data.get_mut();
@@ -216,7 +237,7 @@ unsafe fn promotable_even_into_vec(
     }
 }
 
-unsafe fn promotable_odd_clone(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Handle {
+unsafe fn promotable_odd_clone(data: &AtomicPtr<()>, ptr: NonNull<u8>, len: usize) -> Handle {
     let shared = data.load(Ordering::Acquire);
     let kind = shared as usize & KIND_MASK;
 
@@ -228,7 +249,7 @@ unsafe fn promotable_odd_clone(data: &AtomicPtr<()>, ptr: *const u8, len: usize)
     }
 }
 
-unsafe fn promotable_odd_drop(data: &mut AtomicPtr<()>, ptr: *const u8, len: usize) {
+unsafe fn promotable_odd_drop(data: &mut AtomicPtr<()>, ptr: NonNull<u8>, len: usize) {
     let shared = *data.get_mut();
     let kind = shared as usize & KIND_MASK;
 
@@ -241,7 +262,11 @@ unsafe fn promotable_odd_drop(data: &mut AtomicPtr<()>, ptr: *const u8, len: usi
     }
 }
 
-unsafe fn promotable_odd_into_vec(data: &mut AtomicPtr<()>, ptr: *const u8, len: usize) -> Vec<u8> {
+unsafe fn promotable_odd_into_vec(
+    data: &mut AtomicPtr<()>,
+    ptr: NonNull<u8>,
+    len: usize,
+) -> Vec<u8> {
     let shared = *data.get_mut();
     let kind = shared as usize & KIND_MASK;
 
@@ -274,22 +299,22 @@ static SHARED_VTABLE: Vtable = Vtable {
     into_vec: shared_into_vec,
 };
 
-unsafe fn shared_clone(data: &AtomicPtr<()>, ptr: *const u8, len: usize) -> Handle {
+unsafe fn shared_clone(data: &AtomicPtr<()>, ptr: NonNull<u8>, len: usize) -> Handle {
     let shared = data.load(Ordering::Acquire);
     shallow_clone_arc(shared as _, ptr, len)
 }
 
-unsafe fn shared_drop(data: &mut AtomicPtr<()>, _ptr: *const u8, _len: usize) {
+unsafe fn shared_drop(data: &mut AtomicPtr<()>, _ptr: NonNull<u8>, _len: usize) {
     let shared = *data.get_mut();
     release_shared(shared as *mut Shared);
 }
 
-unsafe fn shared_into_vec(data: &mut AtomicPtr<()>, ptr: *const u8, len: usize) -> Vec<u8> {
+unsafe fn shared_into_vec(data: &mut AtomicPtr<()>, ptr: NonNull<u8>, len: usize) -> Vec<u8> {
     let shared = *data.get_mut();
     release_shared_into_vec(shared as *mut Shared, ptr, len)
 }
 
-unsafe fn shallow_clone_arc(shared: *mut Shared, ptr: *const u8, len: usize) -> Handle {
+unsafe fn shallow_clone_arc(shared: *mut Shared, ptr: NonNull<u8>, len: usize) -> Handle {
     let old_size = (*shared).ref_cnt.fetch_add(1, Ordering::Relaxed);
 
     if old_size > usize::MAX >> 1 {
@@ -309,7 +334,7 @@ unsafe fn shallow_clone_vec(
     atom: &AtomicPtr<()>,
     ptr: *const (),
     buf: *mut u8,
-    offset: *const u8,
+    offset: NonNull<u8>,
     len: usize,
 ) -> Handle {
     // If  the buffer is still tracked in a `Vec<u8>`. It is time to
@@ -403,7 +428,11 @@ unsafe fn release_shared(ptr: *mut Shared) {
     Box::from_raw(ptr);
 }
 
-unsafe fn release_shared_into_vec(data_ptr: *mut Shared, offset: *const u8, len: usize) -> Vec<u8> {
+unsafe fn release_shared_into_vec(
+    data_ptr: *mut Shared,
+    offset: NonNull<u8>,
+    len: usize,
+) -> Vec<u8> {
     // `Shared` storage... follow the drop steps from Arc.
     let ref_cnt = (*data_ptr).ref_cnt.fetch_sub(1, Ordering::Release);
 
@@ -413,7 +442,7 @@ unsafe fn release_shared_into_vec(data_ptr: *mut Shared, offset: *const u8, len:
     if ref_cnt != 1 {
         // We wish extract the vec, but there are other shared references
         // meaning we have to clone the data.
-        return slice::from_raw_parts(offset, len).to_vec();
+        return slice::from_raw_parts(offset.as_ptr(), len).to_vec();
     }
 
     // Re-construct the shared box.
@@ -432,7 +461,7 @@ unsafe fn release_shared_into_vec(data_ptr: *mut Shared, offset: *const u8, len:
     // Because bytes is a window into the vec, we need to
     // calculate the relative offset into the vec we are
     // pointing to.
-    let rel_offset = offset as usize - vec.as_ptr() as usize;
+    let rel_offset = offset.as_ptr() as usize - vec.as_ptr() as usize;
 
     // Drop any data at the end and start of the vec we don't care about.
     vec.truncate(rel_offset + len);
@@ -442,7 +471,7 @@ unsafe fn release_shared_into_vec(data_ptr: *mut Shared, offset: *const u8, len:
     vec
 }
 
-unsafe fn rebuild_boxed_slice(buf: *mut u8, offset: *const u8, len: usize) -> Box<[u8]> {
-    let cap = (offset as usize - buf as usize) + len;
+unsafe fn rebuild_boxed_slice(buf: *mut u8, offset: NonNull<u8>, len: usize) -> Box<[u8]> {
+    let cap = (offset.as_ptr() as usize - buf as usize) + len;
     Box::from_raw(slice::from_raw_parts_mut(buf, cap))
 }

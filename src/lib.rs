@@ -86,12 +86,12 @@ pub mod buf;
 pub use crate::buf::{Buf, BufMut};
 
 mod bytes;
-mod bytes_mut;
-mod fmt;
+//mod bytes_mut;
+//mod fmt;
 mod loom;
 mod store;
 pub use crate::bytes::Bytes;
-pub use crate::bytes_mut::BytesMut;
+//pub use crate::bytes_mut::BytesMut;
 
 // Optional Serde support
 #[cfg(feature = "serde")]
