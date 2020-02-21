@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, Read};
 
-use bytes::buf::{BufExt};
+use bytes::buf::BufExt;
 
 #[test]
 fn read() {

@@ -1,8 +1,8 @@
 #![deny(warnings, rust_2018_idioms)]
 
 use bytes::{buf::IoSliceMut, BufMut, BytesMut};
-use std::usize;
 use std::fmt::Write;
+use std::usize;
 
 #[test]
 fn test_vec_as_mut_buf() {

@@ -1,9 +1,13 @@
-use core::{cmp, mem::{self, MaybeUninit}, ptr, usize};
+use core::{
+    cmp,
+    mem::{self, MaybeUninit},
+    ptr, usize,
+};
 
 #[cfg(feature = "std")]
 use std::fmt;
 
-use alloc::{vec::Vec, boxed::Box};
+use alloc::{boxed::Box, vec::Vec};
 
 /// A trait for values that provide sequential write access to bytes.
 ///
@@ -226,7 +230,10 @@ pub trait BufMut {
     /// # Panics
     ///
     /// Panics if `self` does not have enough capacity to contain `src`.
-    fn put<T: super::Buf>(&mut self, mut src: T) where Self: Sized {
+    fn put<T: super::Buf>(&mut self, mut src: T)
+    where
+        Self: Sized,
+    {
         assert!(self.remaining_mut() >= src.remaining());
 
         while src.has_remaining() {
@@ -237,14 +244,13 @@ pub trait BufMut {
                 let d = self.bytes_mut();
                 l = cmp::min(s.len(), d.len());
 
-                ptr::copy_nonoverlapping(
-                    s.as_ptr(),
-                    d.as_mut_ptr() as *mut u8,
-                    l);
+                ptr::copy_nonoverlapping(s.as_ptr(), d.as_mut_ptr() as *mut u8, l);
             }
 
             src.advance(l);
-            unsafe { self.advance_mut(l); }
+            unsafe {
+                self.advance_mut(l);
+            }
         }
     }
 
@@ -270,7 +276,12 @@ pub trait BufMut {
     fn put_slice(&mut self, src: &[u8]) {
         let mut off = 0;
 
-        assert!(self.remaining_mut() >= src.len(), "buffer overflow; remaining = {}; src = {}", self.remaining_mut(), src.len());
+        assert!(
+            self.remaining_mut() >= src.len(),
+            "buffer overflow; remaining = {}; src = {}",
+            self.remaining_mut(),
+            src.len()
+        );
 
         while off < src.len() {
             let cnt;
@@ -279,16 +290,14 @@ pub trait BufMut {
                 let dst = self.bytes_mut();
                 cnt = cmp::min(dst.len(), src.len() - off);
 
-                ptr::copy_nonoverlapping(
-                    src[off..].as_ptr(),
-                    dst.as_mut_ptr() as *mut u8,
-                    cnt);
+                ptr::copy_nonoverlapping(src[off..].as_ptr(), dst.as_mut_ptr() as *mut u8, cnt);
 
                 off += cnt;
-
             }
 
-            unsafe { self.advance_mut(cnt); }
+            unsafe {
+                self.advance_mut(cnt);
+            }
         }
     }
 
@@ -1011,15 +1020,16 @@ impl BufMut for Vec<u8> {
         let len = self.len();
 
         let ptr = self.as_mut_ptr() as *mut MaybeUninit<u8>;
-        unsafe {
-            &mut slice::from_raw_parts_mut(ptr, cap)[len..]
-        }
+        unsafe { &mut slice::from_raw_parts_mut(ptr, cap)[len..] }
     }
 
     // Specialize these methods so they can skip checking `remaining_mut`
     // and `advance_mut`.
 
-    fn put<T: super::Buf>(&mut self, mut src: T) where Self: Sized {
+    fn put<T: super::Buf>(&mut self, mut src: T)
+    where
+        Self: Sized,
+    {
         // In case the src isn't contiguous, reserve upfront
         self.reserve(src.remaining());
 

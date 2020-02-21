@@ -1,22 +1,23 @@
-use core::{cmp, ptr, mem};
+use core::{cmp, mem, ptr};
 
 #[cfg(feature = "std")]
 use std::io::IoSlice;
 
-use alloc::{boxed::Box};
+use alloc::boxed::Box;
 
 macro_rules! buf_get_impl {
-    ($this:ident, $typ:tt::$conv:tt) => ({
+    ($this:ident, $typ:tt::$conv:tt) => {{
         const SIZE: usize = mem::size_of::<$typ>();
-         // try to convert directly from the bytes
-         // this Option<ret> trick is to avoid keeping a borrow on self
-         // when advance() is called (mut borrow) and to call bytes() only once
-        let ret =  $this.bytes().get(..SIZE).map(|src| unsafe {
-            $typ::$conv(*(src as *const _ as *const [_; SIZE]))
-        });
+        // try to convert directly from the bytes
+        // this Option<ret> trick is to avoid keeping a borrow on self
+        // when advance() is called (mut borrow) and to call bytes() only once
+        let ret = $this
+            .bytes()
+            .get(..SIZE)
+            .map(|src| unsafe { $typ::$conv(*(src as *const _ as *const [_; SIZE])) });
 
         if let Some(ret) = ret {
-             // if the direct conversion was possible, advance and return
+            // if the direct conversion was possible, advance and return
             $this.advance(SIZE);
             return ret;
         } else {
@@ -25,8 +26,8 @@ macro_rules! buf_get_impl {
             $this.copy_to_slice(&mut buf); // (do the advance)
             return $typ::$conv(buf);
         }
-    });
-    (le => $this:ident, $typ:tt, $len_to_read:expr) => ({
+    }};
+    (le => $this:ident, $typ:tt, $len_to_read:expr) => {{
         debug_assert!(mem::size_of::<$typ>() >= $len_to_read);
 
         // The same trick as above does not improve the best case speed.
@@ -34,12 +35,12 @@ macro_rules! buf_get_impl {
         let mut buf = [0; (mem::size_of::<$typ>())];
         $this.copy_to_slice(&mut buf[..($len_to_read)]);
         return $typ::from_le_bytes(buf);
-    });
+    }};
     (be => $this:ident, $typ:tt, $len_to_read:expr) => {{
         debug_assert!(mem::size_of::<$typ>() >= $len_to_read);
 
         let mut buf = [0; (mem::size_of::<$typ>())];
-        $this.copy_to_slice(&mut buf[mem::size_of::<$typ>()-($len_to_read)..]);
+        $this.copy_to_slice(&mut buf[mem::size_of::<$typ>() - ($len_to_read)..]);
         return $typ::from_be_bytes(buf);
     }};
 }
@@ -251,8 +252,7 @@ pub trait Buf {
                 let src = self.bytes();
                 cnt = cmp::min(src.len(), dst.len() - off);
 
-                ptr::copy_nonoverlapping(
-                    src.as_ptr(), dst[off..].as_mut_ptr(), cnt);
+                ptr::copy_nonoverlapping(src.as_ptr(), dst[off..].as_mut_ptr(), cnt);
 
                 off += cnt;
             }
@@ -950,7 +950,8 @@ impl Buf for Option<[u8; 1]> {
     }
 
     fn bytes(&self) -> &[u8] {
-        self.as_ref().map(AsRef::as_ref)
+        self.as_ref()
+            .map(AsRef::as_ref)
             .unwrap_or(Default::default())
     }
 
@@ -994,7 +995,8 @@ impl<T: AsRef<[u8]>> Buf for std::io::Cursor<T> {
 
     fn advance(&mut self, cnt: usize) {
         let pos = (self.position() as usize)
-            .checked_add(cnt).expect("overflow");
+            .checked_add(cnt)
+            .expect("overflow");
 
         assert!(pos <= self.get_ref().as_ref().len());
         self.set_position(pos as u64);
