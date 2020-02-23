@@ -310,29 +310,9 @@ impl Bytes {
     /// Panics if `at > len`.
     #[must_use = "consider Bytes::truncate if you don't need the other half"]
     pub fn split_off(&mut self, at: usize) -> Bytes {
-        // assert!(
-        //     at <= self.len(),
-        //     "split_off out of bounds: {:?} <= {:?}",
-        //     at,
-        //     self.len(),
-        // );
-
-        // if at == self.len() {
-        //     return Bytes::new();
-        // }
-
-        // if at == 0 {
-        //     return mem::replace(self, Bytes::new());
-        // }
-
-        // let mut ret = self.clone();
-
-        // self.len = at;
-
-        // unsafe { ret.inc_start(at) };
-
-        // ret
-        unimplemented!()
+        Bytes {
+            handle: self.handle.window_split_off(at),
+        }
     }
 
     /// Splits the bytes into two at the given index.
@@ -483,15 +463,6 @@ impl Bytes {
     fn as_slice(&self) -> &[u8] {
         unsafe { self.handle.get_windowed_slice() }
     }
-
-    #[inline]
-    unsafe fn inc_start(&mut self, by: usize) {
-        // // should already be asserted, but debug assert for tests
-        // debug_assert!(self.len >= by, "internal: inc_start out of bounds");
-        // self.len -= by;
-        // self.ptr = self.ptr.offset(by as isize);
-        unimplemented!()
-    }
 }
 
 // Handle must enforce this behavior
@@ -528,7 +499,7 @@ impl Buf for Bytes {
         );
 
         unsafe {
-            self.inc_start(cnt);
+            self.handle.window_inc_start(cnt);
         }
     }
 

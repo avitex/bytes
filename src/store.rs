@@ -1,3 +1,4 @@
+use core::ops::RangeBounds;
 use core::ptr::NonNull;
 use core::{fmt, mem, ptr, slice, usize};
 
@@ -9,13 +10,17 @@ const KIND_ARC: usize = 0b0;
 const KIND_VEC: usize = 0b1;
 const KIND_MASK: usize = 0b1;
 
+/// Holds a owned, or shared reference to stored bytes and
+/// a window into the data.
+///
+/// Will handle dropping the data if is the sole owner.
 #[derive(Debug)]
 pub(crate) struct Handle {
     /// The length of the window into the backing data.
     len: usize,
     /// Pointer to the start of the window into the backing data.
     ptr: NonNull<u8>,
-    /// Shared data, specific over
+    /// Shared data, specific over the backing storage.
     data: AtomicPtr<()>,
     /// Vtable used for base operations over handle.
     vtable: &'static Vtable,
@@ -23,7 +28,7 @@ pub(crate) struct Handle {
 
 impl Handle {
     #[inline]
-    pub const fn empty() -> Self {
+    pub const fn new() -> Self {
         const EMPTY: &[u8] = &[];
         Self::from_static(EMPTY)
     }
@@ -46,7 +51,7 @@ impl Handle {
         // for empty vectors, so the pointer isn't aligned enough for
         // the KIND_VEC stashing to work.
         if vec.is_empty() {
-            return (Handle::empty(), 0);
+            return (Handle::new(), 0);
         }
 
         // Break the vec into it's raw components.
@@ -55,7 +60,7 @@ impl Handle {
         let slice = vec.into_boxed_slice();
         let len = slice.len();
         // We have check the vec to make sure it is not empty.
-        let ptr = unsafe { NonNull::new_unchecked(slice.as_ptr() as *mut u8) };
+        let ptr = unsafe { non_null_ptr(slice.as_ptr() as _) };
         let data = ptr.as_ptr() as usize;
 
         let handle = if data & 0b1 == 0 {
@@ -91,6 +96,89 @@ impl Handle {
     #[inline]
     pub fn window_ptr(&self) -> NonNull<u8> {
         self.ptr
+    }
+
+    #[inline]
+    unsafe fn window_ptr_offset(&self, offset: isize) -> NonNull<u8> {
+        non_null_ptr(self.ptr.as_ptr().offset(offset))
+    }
+
+    #[inline]
+    pub fn window_split_off(&mut self, at: usize) -> Self {
+        assert!(
+            at <= self.window_len(),
+            "split_off out of bounds: {:?} <= {:?}",
+            at,
+            self.window_len(),
+        );
+
+        if at == self.window_len() {
+            return Self::new();
+        }
+
+        if at == 0 {
+            return mem::replace(self, Self::new());
+        }
+
+        let mut ret = self.clone();
+
+        self.len = at;
+
+        unsafe { ret.window_inc_start(at) };
+
+        ret
+    }
+
+    #[inline]
+    pub fn window_slice(&self, range: impl RangeBounds<usize>) -> Self {
+        use core::ops::Bound;
+
+        let len = self.window_len();
+
+        let begin = match range.start_bound() {
+            Bound::Included(&n) => n,
+            Bound::Excluded(&n) => n + 1,
+            Bound::Unbounded => 0,
+        };
+
+        let end = match range.end_bound() {
+            Bound::Included(&n) => n + 1,
+            Bound::Excluded(&n) => n,
+            Bound::Unbounded => len,
+        };
+
+        assert!(
+            begin <= end,
+            "range start must not be greater than end: {:?} <= {:?}",
+            begin,
+            end,
+        );
+        assert!(
+            end <= len,
+            "range end out of bounds: {:?} <= {:?}",
+            end,
+            len,
+        );
+
+        if end == begin {
+            return Self::new();
+        }
+
+        let mut ret = self.clone();
+
+        ret.len = end - begin;
+        ret.ptr = unsafe { self.window_ptr_offset(begin as isize) };
+
+        ret
+    }
+
+    #[inline]
+    pub unsafe fn window_inc_start(&mut self, by: usize) {
+        // should already be asserted, but debug assert for tests
+        debug_assert!(self.len >= by, "internal: inc_start out of bounds");
+        self.len -= by;
+        self.ptr = self.window_ptr_offset(by as isize);
+        unimplemented!()
     }
 
     #[inline]
@@ -474,4 +562,12 @@ unsafe fn release_shared_into_vec(
 unsafe fn rebuild_boxed_slice(buf: *mut u8, offset: NonNull<u8>, len: usize) -> Box<[u8]> {
     let cap = (offset.as_ptr() as usize - buf as usize) + len;
     Box::from_raw(slice::from_raw_parts_mut(buf, cap))
+}
+
+unsafe fn non_null_ptr(ptr: *mut u8) -> NonNull<u8> {
+    if cfg!(debug_assertions) {
+        NonNull::new(ptr).expect("pointer should be non-null")
+    } else {
+        NonNull::new_unchecked(ptr)
+    }
 }
